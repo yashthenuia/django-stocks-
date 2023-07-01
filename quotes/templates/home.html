@@ -1,0 +1,34 @@
+{% extends 'base.html' %}
+{%  block content %}
+
+
+
+{% if ticker %}
+	{{ ticker }}
+
+{% endif %}
+
+
+
+{% if api %}
+	{% if api == "Error..." %}
+		Ther was some problem with ticker symbol,
+		please try again
+
+	{% else %}
+		<h1>{{ api.longName }}</h1></br>
+		Current Price: ${{ api.currentPrice }}</br>
+		Open Price: ${{ api.open }}</br>
+		Market Cap: ${{ api.marketCap }}</br>
+		
+
+
+	{% endif %}
+
+
+{% endif %}
+
+
+
+
+{% endblock %}
