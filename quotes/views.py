@@ -8,6 +8,12 @@ from .models import Stock
 from .forms import StockForm
 
 from django.contrib import messages
+from urllib.request import urlopen, Request
+from bs4 import BeautifulSoup
+import os
+
+
+finwiz_url = 'https://finviz.com/quote.ashx?t='
 
 def home(request): # this is browser request means someone is requesting our page so we return new web page 
 
@@ -31,7 +37,32 @@ def home(request): # this is browser request means someone is requesting our pag
 		# 	api = "Error..."
 
 
-		return render(request, 'home.html', {'api': yash_request})
+
+		#new healines 
+		url = finwiz_url + ticker
+		req = Request(url=url,headers={'User-Agent': 'Mozilla/5.0 (Windows NT 6.1; WOW64; rv:20.0) Gecko/20100101 Firefox/20.0'}) 
+		response = urlopen(req)
+		html = BeautifulSoup(response,'html.parser')    
+		# Read the contents of the file into 'html'html = BeautifulSoup(response)
+		# Find 'news-table' in the Soup and load it into 'news_table'
+		news_table = html.find(id='news-table')
+
+		newss=[]
+		stockdat = news_table.findAll('tr')
+		
+
+		for i, table_row in enumerate(stockdat):
+			stocc={}
+			# Read the text of the element ‘a’ into ‘link_text’
+			stocc['a_text'] = table_row.a.text
+			# Read the text of the element ‘td’ into ‘data_text’
+			stocc['td_text'] = table_row.td.text
+			# Print the contents of ‘link_text’ and ‘data_text’ 
+			newss.append(stocc)			 # Exit after printing 4 rows of data
+			if i == 10:
+			 	break
+
+		return render(request, 'home.html', {'api': yash_request, 'newss':newss})
 
 	else:
 		return render(request, 'home.html', {'ticker': "enter a ticker symbol above..."})
