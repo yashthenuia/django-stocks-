@@ -1,0 +1,124 @@
+import numpy as np
+import pandas as pd
+
+def preprocess_features(df, embedder, text_columns, numeric_columns, categorical_columns):
+    df = df.copy()
+    df.fillna("", inplace=True)
+
+    # Text: Combine & embed each text row
+    combined_texts = df[text_columns].agg(" ".join, axis=1).tolist()
+    text_embeddings = embedder.encode(combined_texts)
+
+    # Categorical: Encode as ordinal or one-hot (you can improve this logic)
+    for col in categorical_columns:
+        df[col] = df[col].astype('category').cat.codes
+
+    # Combine all non-text features
+    all_non_text_cols = numeric_columns + categorical_columns
+    numeric_inputs = df[all_non_text_cols].values if all_non_text_cols else np.empty((len(df), 0))
+
+    # Final feature vector
+    X = np.hstack((text_embeddings, numeric_inputs))
+    return X
+
+
+
+
+import pandas as pd
+import numpy as np
+from sentence_transformers import SentenceTransformer
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.model_selection import train_test_split
+import joblib
+import os
+
+from utils import preprocess_features
+
+# Load CSV
+df = pd.read_csv("data/defects_input.csv")
+
+# 🔧 Define flexible feature sets
+TEXT_COLUMNS = ['headline', 'description', 'how_it_is_solved', 'steps_to_reproduce']
+NUMERIC_COLUMNS = ['reported_days_ago']     # Example: numerical time field
+CATEGORICAL_COLUMNS = ['seriousness', 'component']  # Example: component like UI, Backend, API
+
+# Dummy rank target
+df['rank'] = np.random.randint(1, 6, len(df))
+
+# Load embedder
+embedder = SentenceTransformer('all-MiniLM-L12-v2')
+
+# Preprocess features
+X = preprocess_features(df, embedder, TEXT_COLUMNS, NUMERIC_COLUMNS, CATEGORICAL_COLUMNS)
+y = df['rank']
+
+# Train/test split
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+# Train model
+model = RandomForestRegressor()
+model.fit(X_train, y_train)
+
+# Save model and embedder
+os.makedirs("model", exist_ok=True)
+joblib.dump(model, "model/rank_model.pkl")
+joblib.dump(embedder, "model/embedder.pkl")
+
+print("✅ Training complete. Model and embedder saved.")
+
+
+
+
+import pandas as pd
+import numpy as np
+import joblib
+import os
+import argparse
+
+from utils import preprocess_features
+
+def predict_and_save(input_file, output_file):
+    # Load model and embedder
+    model = joblib.load("model/rank_model.pkl")
+    embedder = joblib.load("model/embedder.pkl")
+
+    # Load new data
+    df = pd.read_csv(input_file)
+
+    # 🔧 Define same features as training
+    TEXT_COLUMNS = ['headline', 'description', 'how_it_is_solved', 'steps_to_reproduce']
+    NUMERIC_COLUMNS = ['reported_days_ago']
+    CATEGORICAL_COLUMNS = ['seriousness', 'component']
+
+    # Preprocess features
+    X = preprocess_features(df, embedder, TEXT_COLUMNS, NUMERIC_COLUMNS, CATEGORICAL_COLUMNS)
+
+    # Predict
+    df['predicted_rank'] = model.predict(X)
+    df_sorted = df.sort_values(by='predicted_rank', ascending=False)
+
+    # Save output
+    os.makedirs("output", exist_ok=True)
+    if output_file.endswith(".json"):
+        df_sorted.to_json(output_file, orient='records', indent=2)
+    else:
+        df_sorted.to_csv(output_file, index=False)
+
+    print(f"✅ Prediction complete. Output saved to {output_file}")
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input", default="data/defects_input.csv", help="CSV input file")
+    parser.add_argument("--output", default="output/ranked_defects.csv", help="CSV or JSON output")
+    args = parser.parse_args()
+
+    predict_and_save(args.input, args.output)
+
+
+
+
+
+headline,description,how_it_is_solved,steps_to_reproduce,seriousness,component,reported_days_ago
+Login crash,Crashes when entering invalid password,Null check added,1. Open app 2. Enter wrong pass,high,Backend,3
+UI overlap,Buttons overlap on iPhone 12,Used media query fix,1. Launch app 2. Navigate to settings,medium,UI,15
+Spelling mistake,Typo in message,Changed label key,N/A,low,UI,2
