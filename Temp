@@ -1,124 +1,156 @@
-import numpy as np
 import pandas as pd
+import numpy as np
+from langdetect import detect, DetectorFactory
+from tqdm import tqdm
+DetectorFactory.seed = 42
+
+def load_data(file_path):
+    import os
+    ext = os.path.splitext(file_path)[-1].lower()
+
+    if ext == '.csv':
+        for enc in ['utf-8', 'utf-16', 'latin1']:
+            try:
+                print(f"Trying CSV encoding: {enc}")
+                return pd.read_csv(file_path, encoding=enc, on_bad_lines='skip')
+            except UnicodeDecodeError:
+                continue
+        raise ValueError("❌ CSV decode failed: utf-8, utf-16, latin1.")
+
+    elif ext in ['.xls', '.xlsx']:
+        try:
+            return pd.read_excel(file_path, engine='openpyxl')
+        except Exception as e:
+            raise ValueError(f"❌ Excel read failed: {e}")
+
+    raise ValueError("Unsupported file type. Use .csv or .xlsx")
+
+def detect_languages(df, text_columns):
+    lang_column = []
+    for row in tqdm(df[text_columns].fillna("").agg(" ".join, axis=1), desc="Detecting language"):
+        try:
+            lang = detect(row)
+        except Exception:
+            lang = "unknown"
+        lang_column.append(lang)
+    return lang_column
 
 def preprocess_features(df, embedder, text_columns, numeric_columns, categorical_columns):
     df = df.copy()
     df.fillna("", inplace=True)
 
-    # Text: Combine & embed each text row
+    # Language detection
+    df["detected_language"] = detect_languages(df, text_columns)
+
+    # Text embedding
     combined_texts = df[text_columns].agg(" ".join, axis=1).tolist()
     text_embeddings = embedder.encode(combined_texts)
 
-    # Categorical: Encode as ordinal or one-hot (you can improve this logic)
+    # Encode categorical columns
     for col in categorical_columns:
-        df[col] = df[col].astype('category').cat.codes
+        df[col] = df[col].astype("category").cat.codes
 
-    # Combine all non-text features
     all_non_text_cols = numeric_columns + categorical_columns
-    numeric_inputs = df[all_non_text_cols].values if all_non_text_cols else np.empty((len(df), 0))
+    numeric_features = df[all_non_text_cols].values if all_non_text_cols else np.empty((len(df), 0))
 
-    # Final feature vector
-    X = np.hstack((text_embeddings, numeric_inputs))
-    return X
-
-
+    return np.hstack((text_embeddings, numeric_features)), df
 
 
 import pandas as pd
 import numpy as np
-from sentence_transformers import SentenceTransformer
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split
+from sentence_transformers import SentenceTransformer
 import joblib
 import os
 
-from utils import preprocess_features
+from utils import load_data, preprocess_features
 
-# Load CSV
-df = pd.read_csv("data/defects_input.csv")
+# Load the training data
+df = load_data("data/defects_input.csv")
 
-# 🔧 Define flexible feature sets
-TEXT_COLUMNS = ['headline', 'description', 'how_it_is_solved', 'steps_to_reproduce']
-NUMERIC_COLUMNS = ['reported_days_ago']     # Example: numerical time field
-CATEGORICAL_COLUMNS = ['seriousness', 'component']  # Example: component like UI, Backend, API
+# Drop metadata (not used for training)
+metadata_columns = ['defect_id', 'ticket_id']
+df.drop(columns=[col for col in metadata_columns if col in df.columns], inplace=True)
 
-# Dummy rank target
-df['rank'] = np.random.randint(1, 6, len(df))
+# Create dummy rank if missing
+if 'rank' not in df.columns:
+    df['rank'] = np.random.randint(1, 4, size=len(df))  # 1 = high, 3 = low
 
-# Load embedder
-embedder = SentenceTransformer('all-MiniLM-L12-v2')
-
-# Preprocess features
-X = preprocess_features(df, embedder, TEXT_COLUMNS, NUMERIC_COLUMNS, CATEGORICAL_COLUMNS)
 y = df['rank']
+
+# Feature configuration
+TEXT_COLUMNS = ['headline', 'description', 'how_it_is_solved', 'steps_to_reproduce']
+NUMERIC_COLUMNS = ['reported_days_ago']
+CATEGORICAL_COLUMNS = ['seriousness', 'component']
+
+# Load embedder and preprocess
+embedder = SentenceTransformer('all-MiniLM-L12-v2')
+X, df = preprocess_features(df, embedder, TEXT_COLUMNS, NUMERIC_COLUMNS, CATEGORICAL_COLUMNS)
 
 # Train/test split
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
 # Train model
-model = RandomForestRegressor()
+model = RandomForestRegressor(n_estimators=100, random_state=42)
 model.fit(X_train, y_train)
 
-# Save model and embedder
+# Save models
 os.makedirs("model", exist_ok=True)
 joblib.dump(model, "model/rank_model.pkl")
 joblib.dump(embedder, "model/embedder.pkl")
 
-print("✅ Training complete. Model and embedder saved.")
+print("✅ Model training complete. Saved to 'model/'")
 
 
-
-
+from utils import load_data, preprocess_features
+from sentence_transformers import SentenceTransformer
 import pandas as pd
 import numpy as np
 import joblib
 import os
 import argparse
 
-from utils import preprocess_features
-
 def predict_and_save(input_file, output_file):
-    # Load model and embedder
     model = joblib.load("model/rank_model.pkl")
     embedder = joblib.load("model/embedder.pkl")
 
-    # Load new data
-    df = pd.read_csv(input_file)
+    # Load input data
+    df = load_data(input_file)
 
-    # 🔧 Define same features as training
+    # Keep metadata for output
+    metadata_columns = ['defect_id', 'ticket_id']
+    meta = df[metadata_columns] if all(c in df.columns for c in metadata_columns) else df.iloc[:, :1]
+
+    # Feature config
     TEXT_COLUMNS = ['headline', 'description', 'how_it_is_solved', 'steps_to_reproduce']
     NUMERIC_COLUMNS = ['reported_days_ago']
     CATEGORICAL_COLUMNS = ['seriousness', 'component']
 
-    # Preprocess features
-    X = preprocess_features(df, embedder, TEXT_COLUMNS, NUMERIC_COLUMNS, CATEGORICAL_COLUMNS)
+    # Preprocess
+    X, df = preprocess_features(df, embedder, TEXT_COLUMNS, NUMERIC_COLUMNS, CATEGORICAL_COLUMNS)
 
-    # Predict
-    df['predicted_rank'] = model.predict(X)
-    df_sorted = df.sort_values(by='predicted_rank', ascending=False)
+    # Predict and post-process
+    df['predicted_rank'] = model.predict(X).round(2)
+    df['priority_label'] = df['predicted_rank'].apply(lambda r: 'High' if r < 1.5 else 'Medium' if r < 2.5 else 'Low')
+    df = pd.concat([meta, df], axis=1)
+    df_sorted = df.sort_values(by='predicted_rank', ascending=True)
 
     # Save output
     os.makedirs("output", exist_ok=True)
     if output_file.endswith(".json"):
-        df_sorted.to_json(output_file, orient='records', indent=2)
+        df_sorted.to_json(output_file, orient='records', indent=2, force_ascii=False)
     else:
-        df_sorted.to_csv(output_file, index=False)
+        df_sorted.to_csv(output_file, index=False, encoding='utf-8')
 
     print(f"✅ Prediction complete. Output saved to {output_file}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input", default="data/defects_input.csv", help="CSV input file")
-    parser.add_argument("--output", default="output/ranked_defects.csv", help="CSV or JSON output")
+    parser.add_argument("--input", required=True, help="Path to input CSV/XLSX file")
+    parser.add_argument("--output", required=True, help="Path to output .csv or .json")
     args = parser.parse_args()
-
     predict_and_save(args.input, args.output)
 
 
 
-
-
-headline,description,how_it_is_solved,steps_to_reproduce,seriousness,component,reported_days_ago
-Login crash,Crashes when entering invalid password,Null check added,1. Open app 2. Enter wrong pass,high,Backend,3
-UI overlap,Buttons overlap on iPhone 12,Used media query fix,1. Launch app 2. Navigate to settings,medium,UI,15
-Spelling mistake,Typo in message,Changed label key,N/A,low,UI,2
